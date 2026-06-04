@@ -4,6 +4,8 @@
 #include <cmath>
 #include <random>
 #include <algorithm>
+#include <iostream>
+#include <fstream>
 #include <fmt/core.h>
 #include <fmt/format.h>
 
@@ -39,11 +41,11 @@ std::map<int, std::vector<int>> make_icosahedron_graph() {
 
     std::map<std::pair<int, int>, std::vector<int>> edge_to_faces;
     
-    for (int f_id = 0; f_id < faces.size(); ++f_id) {
+    for(uint32_t f_id = 0; f_id < faces.size(); ++f_id) {
         auto [v0, v1, v2] = faces[f_id];
         std::vector<int> vertices = {v0, v1, v2};
         
-        for (int i = 0; i < 3; ++i) {
+        for(int i = 0; i < 3; i++) {
             int a = vertices[i];
             int b = vertices[(i + 1) % 3];
             std::pair<int, int> edge = {std::min(a, b), std::max(a, b)};
@@ -52,12 +54,12 @@ std::map<int, std::vector<int>> make_icosahedron_graph() {
     }
 
     std::map<int, std::set<int>> neighbors_set;
-    for (int i = 0; i < 20; ++i) {
+    for(int i = 0; i < 20; i++) {
         neighbors_set[i] = std::set<int>();
     }
 
-    for (const auto& [edge, attached] : edge_to_faces) {
-        if (attached.size() == 2) {
+    for(const auto& [edge, attached] : edge_to_faces) {
+        if(attached.size() == 2) {
             int i = attached[0];
             int j = attached[1];
             neighbors_set[i].insert(j);
@@ -67,7 +69,7 @@ std::map<int, std::vector<int>> make_icosahedron_graph() {
 
     // Convert sets to sorted vectors
     std::map<int, std::vector<int>> neighbors;
-    for (int i = 0; i < 20; ++i) {
+    for(int i = 0; i < 20; i++) {
         neighbors[i] = std::vector<int>(neighbors_set[i].begin(), neighbors_set[i].end());
         std::sort(neighbors[i].begin(), neighbors[i].end());
     }
@@ -76,12 +78,11 @@ std::map<int, std::vector<int>> make_icosahedron_graph() {
 }
 
 // Count intact bonds in the remaining set
-int count_intact_bonds(const std::set<int>& remaining, 
-                       const std::map<int, std::vector<int>>& neighbors) {
+int count_intact_bonds(const std::set<int>& remaining, const std::map<int, std::vector<int>>& neighbors) {
     int b = 0;
-    for (int i : remaining) {
-        for (int j : neighbors.at(i)) {
-            if (remaining.count(j) && j > i) {
+    for(int i : remaining) {
+        for(int j : neighbors.at(i)) {
+            if(remaining.count(j) && j > i) {
                 b++;
             }
         }
@@ -95,7 +96,7 @@ SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
     std::set<int> remaining;
-    for (int i = 0; i < 20; ++i) {
+    for(int i = 0; i < 20; i++) {
         remaining.insert(i);
     }
 
@@ -104,15 +105,15 @@ SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors
     result.time.push_back(0.0);
     result.broken_bonds.push_back(0);
 
-    while (!remaining.empty()) {
+    while(!remaining.empty()) {
         std::vector<int> candidates;
         std::vector<double> rates;
         std::vector<int> m_values;
 
-        for (int i : remaining) {
+        for(int i : remaining) {
             int m_i = 0;
-            for (int j : neighbors[i]) {
-                if (remaining.count(j)) {
+            for(int j : neighbors[i]) {
+                if(remaining.count(j)) {
                     m_i++;
                 }
             }
@@ -125,7 +126,7 @@ SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors
 
         // Calculate total rate
         double K = 0.0;
-        for (double rate : rates) {
+        for(double rate : rates) {
             K += rate;
         }
 
@@ -136,16 +137,16 @@ SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors
 
         // Sample which vertex is removed using categorical distribution
         std::vector<double> probs(rates.size());
-        for (size_t i = 0; i < rates.size(); ++i) {
+        for(size_t i = 0; i < rates.size(); i++) {
             probs[i] = rates[i] / K;
         }
 
         double u2 = uniform(gen);
         double cumsum = 0.0;
         int choice = 0;
-        for (size_t i = 0; i < probs.size(); ++i) {
+        for(size_t i = 0; i < probs.size(); i++) {
             cumsum += probs[i];
-            if (u2 <= cumsum) {
+            if(u2 <= cumsum) {
                 choice = i;
                 break;
             }
@@ -166,7 +167,7 @@ SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors
     // Adjust times so that t=0 coincides with first triangle detachment
     double t_wait = result.time[1];
     result.waiting_time = t_wait;
-    for (size_t i = 1; i < result.time.size(); ++i) {
+    for(size_t i = 1; i < result.time.size(); i++) {
         result.time[i] -= t_wait;
     }
     result.time.erase(result.time.begin());
@@ -180,7 +181,7 @@ void print_results(const SimulationResult& result) {
     fmt::println("\nSimulation timeline:");
     fmt::println("{:>12} {:>8} {:>8} {:>12} {:>12}", "Time", "N", "B", "Removed", "BrokenBonds");
     
-    for (size_t i = 0; i < result.time.size(); ++i) {
+    for(size_t i = 0; i < result.time.size(); i++) {
         fmt::println("{:>12.6f} {:>8d} {:>8d} {:>12d} {:>12d}",
                     result.time[i],
                     result.n[i],
@@ -191,87 +192,95 @@ void print_results(const SimulationResult& result) {
 }
 
 // Compute averages over multiple trajectories
-AveragedResult compute_averaged_results(const std::vector<SimulationResult>& trajectories) {
-    if (trajectories.empty()) {
+AveragedResult compute_averaged_results(const std::vector<SimulationResult>& trajectories, uint32_t N_time_grid) {
+    if(trajectories.empty()) {
         return AveragedResult();
     }
 
     size_t n_traj = trajectories.size();
-    size_t max_steps = 0;
     
-    // Find maximum number of steps
-    for (const auto& traj : trajectories) {
-        max_steps = std::max(max_steps, traj.n.size());
+    // Find maximum time across all trajectories to define common time grid
+    double max_time = 0.0;
+    for(const auto& traj : trajectories) {
+        max_time = std::max(max_time, traj.time.back());
     }
 
     AveragedResult averaged;
+
+    // build the common time grid
+    double dt = max_time / (N_time_grid - 1);
+    averaged.time.resize(N_time_grid);
+    for(uint32_t i = 0; i < N_time_grid; i++) {
+        averaged.time[i] = dt * i;
+    }
     
     // Average waiting times
     double waiting_time_sum = 0.0;
     double waiting_time_sq_sum = 0.0;
-    for (const auto& traj : trajectories) {
+    for(const auto& traj : trajectories) {
         waiting_time_sum += traj.waiting_time;
         waiting_time_sq_sum += traj.waiting_time * traj.waiting_time;
     }
     averaged.waiting_time_mean = waiting_time_sum / n_traj;
-    double waiting_time_var = (waiting_time_sq_sum / n_traj) - 
-                              (averaged.waiting_time_mean * averaged.waiting_time_mean);
+    double waiting_time_var = (waiting_time_sq_sum / n_traj) - (averaged.waiting_time_mean * averaged.waiting_time_mean);
     averaged.waiting_time_std = std::sqrt(std::max(0.0, waiting_time_var));
 
     // Average n and b at each step
-    averaged.n_mean.resize(max_steps, 0.0);
-    averaged.n_std.resize(max_steps, 0.0);
-    averaged.b_mean.resize(max_steps, 0.0);
-    averaged.b_std.resize(max_steps, 0.0);
+    averaged.n_mean.resize(N_time_grid, 0.0);
+    averaged.n_std.resize(N_time_grid, 0.0);
+    averaged.b_mean.resize(N_time_grid, 0.0);
+    averaged.b_std.resize(N_time_grid, 0.0);
 
-    std::vector<int> count_at_step(max_steps, 0);
-    std::vector<double> n_sq_sum(max_steps, 0.0);
-    std::vector<double> b_sq_sum(max_steps, 0.0);
+    std::vector<double> n_sq_sum(N_time_grid, 0.0);
+    std::vector<double> b_sq_sum(N_time_grid, 0.0);
 
-    for (const auto& traj : trajectories) {
-        for (size_t i = 0; i < traj.n.size(); ++i) {
-            averaged.n_mean[i] += traj.n[i];
-            averaged.n_std[i] += traj.n[i] * traj.n[i];
-            averaged.b_mean[i] += traj.b[i];
-            averaged.b_std[i] += traj.b[i] * traj.b[i];
-            count_at_step[i]++;
-        }
+    for(const auto& traj : trajectories) {
+        uint32_t current_common_idx = 0;
+        double common_time = averaged.time[current_common_idx];
+         for(uint32_t i = 1; i < traj.n.size(); i++) {
+            double t = traj.time[i];
+            uint32_t prev_idx = i - 1;
+            while(common_time < t) {
+                averaged.n_mean[current_common_idx] += traj.n[prev_idx];
+                averaged.n_std[current_common_idx] += traj.n[prev_idx] * traj.n[prev_idx];
+                averaged.b_mean[current_common_idx] += traj.b[prev_idx];
+                averaged.b_std[current_common_idx] += traj.b[prev_idx] * traj.b[prev_idx];
+
+                current_common_idx++;
+                common_time = averaged.time[current_common_idx];
+            } 
+         }
     }
 
     // Compute mean and std
-    for (size_t i = 0; i < max_steps; ++i) {
-        if (count_at_step[i] > 0) {
-            averaged.n_mean[i] /= count_at_step[i];
-            averaged.b_mean[i] /= count_at_step[i];
-            
-            double n_var = (averaged.n_std[i] / count_at_step[i]) - (averaged.n_mean[i] * averaged.n_mean[i]);
-            double b_var = (averaged.b_std[i] / count_at_step[i]) - (averaged.b_mean[i] * averaged.b_mean[i]);
-            
-            averaged.n_std[i] = std::sqrt(std::max(0.0, n_var));
-            averaged.b_std[i] = std::sqrt(std::max(0.0, b_var));
-        }
+    for(size_t i = 0; i < N_time_grid; i++) {
+        averaged.n_mean[i] /= n_traj;
+        averaged.b_mean[i] /= n_traj;
+        
+        double n_var = (averaged.n_std[i] / n_traj) - (averaged.n_mean[i] * averaged.n_mean[i]);
+        double b_var = (averaged.b_std[i] / n_traj) - (averaged.b_mean[i] * averaged.b_mean[i]);
+        
+        averaged.n_std[i] = std::sqrt(std::max(0.0, n_var));
+        averaged.b_std[i] = std::sqrt(std::max(0.0, b_var));
     }
-
-    // Use first trajectory's time as reference
-    averaged.time = trajectories[0].time;
 
     return averaged;
 }
 
 // Print averaged results
 void print_averaged_results(const AveragedResult& averaged) {
-    fmt::println("Waiting time: {:.6f} ± {:.6f}", averaged.waiting_time_mean, averaged.waiting_time_std);
-    fmt::println("\nAveraged timeline:");
-    fmt::println("{:>12} {:>16} {:>16}", "Time", "N (mean±std)", "B (mean±std)");
+    std::ofstream ofs("results.dat");
     
-    for (size_t i = 0; i < averaged.time.size(); ++i) {
-        fmt::println("{:>12.6f} {:>8.2f}±{:>6.2f} {:>8.2f}±{:>6.2f}",
-                    averaged.time[i],
-                    averaged.n_mean[i],
-                    averaged.n_std[i],
-                    averaged.b_mean[i],
-                    averaged.b_std[i]);
+    ofs << fmt::format("# Waiting time: {:.6f} ± {:.6f}", averaged.waiting_time_mean, averaged.waiting_time_std) << std::endl;
+    ofs << fmt::format("# {:>12} {:>16} {:>16} {:>16} {:>16}", "Time", "N_mean", "N_std", "B_mean", "B_std") << std::endl;
+    
+    for(size_t i = 0; i < averaged.time.size(); i++) {
+        ofs << fmt::format("{:>12.6f} {:>16.2f} {:>16.2f} {:>16.2f} {:>16.2f}", 
+                averaged.time[i], averaged.n_mean[i], averaged.n_std[i], averaged.b_mean[i], averaged.b_std[i])
+            << std::endl;
     }
+
+    ofs.close();
 }
 
 int main(int argc, char* argv[]) {
@@ -279,19 +288,19 @@ int main(int argc, char* argv[]) {
     double beta_eps = 1.0;  // Energy parameter
     double nu = 1.0;        // Attempt frequency
     unsigned int n_trajectories = 1;  // Number of trajectories to average
-    unsigned int seed = 42; // Random seed for reproducibility
+    unsigned int seed = 42; // Random seed forreproducibility
 
     // Parse command line arguments
-    if (argc > 1) {
+    if(argc > 1) {
         beta_eps = std::stod(argv[1]);
     }
-    if (argc > 2) {
+    if(argc > 2) {
         nu = std::stod(argv[2]);
     }
-    if (argc > 3) {
+    if(argc > 3) {
         n_trajectories = std::stoul(argv[3]);
     }
-    if (argc > 4) {
+    if(argc > 4) {
         seed = std::stoul(argv[4]);
     }
 
@@ -303,23 +312,24 @@ int main(int argc, char* argv[]) {
     auto neighbors = make_icosahedron_graph();
     
     // Run multiple trajectories
-    for (unsigned int i = 0; i < n_trajectories; ++i) {
+    for(unsigned int i = 0; i < n_trajectories; i++) {
         unsigned int traj_seed = seed + i;
         auto result = gillespie_disassembly(neighbors, beta_eps, nu, traj_seed);
         trajectories.push_back(result);
         
-        if (n_trajectories <= 3) {
+        if(n_trajectories <= 3) {
             fmt::println("Trajectory {}:", (i + 1));
             print_results(result);
             fmt::println("");
-        } else if ((i + 1) % std::max(1u, n_trajectories / 10) == 0) {
+        } 
+        else if((i + 1) % std::max(1u, n_trajectories / 10) == 0) {
             fmt::println("Completed {}/{} trajectories...", (i + 1), n_trajectories);
         }
     }
 
-    if (n_trajectories > 1) {
+    if(n_trajectories > 1) {
         fmt::println("\n=== AVERAGED RESULTS ===");
-        auto averaged = compute_averaged_results(trajectories);
+        auto averaged = compute_averaged_results(trajectories, 1000);
         print_averaged_results(averaged);
     }
 
