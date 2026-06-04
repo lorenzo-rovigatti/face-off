@@ -128,8 +128,6 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double be
     rates.reserve(remaining.size());
     std::vector<int> m_values;
     m_values.reserve(remaining.size());
-    std::vector<double> probs;
-    probs.reserve(remaining.size());
 
     while(!remaining.empty()) {
         candidates.clear();
@@ -162,16 +160,11 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double be
         t += dt;
 
         // Sample which vertex is removed using categorical distribution
-        probs.clear();
-        for(size_t i = 0; i < rates.size(); i++) {
-            probs.push_back(rates[i] / K);
-        }
-
         double u2 = uniform(gen);
         double cumsum = 0.0;
         int choice = 0;
-        for(size_t i = 0; i < probs.size(); i++) {
-            cumsum += probs[i];
+        for(size_t i = 0; i < rates.size(); i++) {
+            cumsum += rates[i] / K; // normalize to get cumulative probabilities
             if(u2 <= cumsum) {
                 choice = i;
                 break;
