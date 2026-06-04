@@ -1,3 +1,5 @@
+#include "build_polyhedra.h"
+
 #include <vector>
 #include <set>
 #include <map>
@@ -12,50 +14,16 @@
 // Structure to hold some structural parameters of the capsid and precompute rates for different m values
 struct CapsidParameters {
     uint32_t N;
-    std::vector<std::tuple<int, int, int>> faces;
     std::vector<std::vector<int>> neighbors;
-    std::set<int> triangles;
     std::vector<double> m_rates;
 
-    CapsidParameters(std::vector<std::tuple<int, int, int>> &mfaces, double beta_eps, double nu): 
-            N(mfaces.size()), 
-            faces(mfaces),
-            neighbors(mfaces.size()) {
-        std::map<std::pair<int, int>, std::vector<int>> edge_to_faces;
-    
-        for(uint32_t f_id = 0; f_id < faces.size(); ++f_id) {
-            auto [v0, v1, v2] = faces[f_id];
-            std::vector<int> vertices = {v0, v1, v2};
-            
-            for(int i = 0; i < 3; i++) {
-                int a = vertices[i];
-                int b = vertices[(i + 1) % 3];
-                std::pair<int, int> edge = {std::min(a, b), std::max(a, b)};
-                edge_to_faces[edge].push_back(f_id);
-            }
-
-            triangles.insert(f_id);
-        }
-
-        std::map<int, std::set<int>> neighbors_set;
-        for(uint32_t i = 0; i < N; i++) {
-            neighbors_set[i] = std::set<int>();
-        }
-
-        for(const auto& [edge, attached] : edge_to_faces) {
-            if(attached.size() == 2) {
-                int i = attached[0];
-                int j = attached[1];
-                neighbors_set[i].insert(j);
-                neighbors_set[j].insert(i);
-            }
-        }
+    CapsidParameters(const std::vector<std::vector<int>> &mneighbors, double beta_eps, double nu): 
+            N(mneighbors.size()), 
+            neighbors(mneighbors) {
 
         // Convert sets to sorted vectors
         uint32_t max_m = 0;
         for(uint32_t i = 0; i < N; i++) {
-            neighbors[i] = std::vector<int>(neighbors_set[i].begin(), neighbors_set[i].end());
-            std::sort(neighbors[i].begin(), neighbors[i].end());
             neighbors[i].size() > max_m ? max_m = neighbors[i].size() : max_m = max_m;
         }
 
@@ -336,13 +304,17 @@ int main(int argc, char* argv[]) {
 
     std::vector<SimulationResult> trajectories;
 
-    std::vector<std::tuple<int, int, int>> faces = {
-        {0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
-        {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
-        {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
-        {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1},
-    };
-    CapsidParameters params(faces, beta_eps, nu);
+    auto neighbors = AAV_neighbors();
+    // auto neighbors = icosahedron_neighbors();
+    CapsidParameters params(neighbors, beta_eps, nu);
+
+    for(auto n : params.neighbors) {
+        fmt::print("Neighbors: ");
+        for(int nb : n) {
+            fmt::print("{} ", nb);
+        }
+        fmt::println("");
+    }
     
     // Run multiple trajectories
     for(unsigned int i = 0; i < n_trajectories; i++) {
