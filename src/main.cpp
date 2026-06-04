@@ -97,12 +97,14 @@ struct AveragedResult {
 };
 
 // Count intact bonds in the remaining set: it's a slow function, use it only for debugging or to compute the initial number of bonds
-int count_intact_bonds(const std::set<int>& remaining, const std::vector<std::vector<int>>& neighbors) {
+int count_intact_bonds(const std::vector<int>& is_remaining, const std::vector<std::vector<int>>& neighbors) {
     int b = 0;
-    for(int i : remaining) {
-        for(int j : neighbors[i]) {
-            if(remaining.count(j) && j > i) {
-                b++;
+    for(size_t i = 0; i < is_remaining.size(); i++) {
+        if(is_remaining[i]) {
+            for(int j : neighbors[i]) {
+                if(is_remaining[j] && j > (int)i) {
+                    b++;
+                }
             }
         }
     }
@@ -114,38 +116,41 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double be
     std::mt19937 gen(seed != 0 ? seed : std::random_device{}());
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
-    std::set<int> remaining = params.triangles;
+    std::vector<int> is_remaining(params.N, 1);
 
     double t = 0.0;
     SimulationResult result(params.N + 1);
     result.time.push_back(0.0);
     result.broken_bonds.push_back(0);
-    int remaining_bonds = count_intact_bonds(remaining, params.neighbors);
+    int remaining_bonds = count_intact_bonds(is_remaining, params.neighbors);
+    int remaining_triangles = params.N;
 
     std::vector<int> candidates;
-    candidates.reserve(remaining.size());
+    candidates.reserve(params.N);
     std::vector<double> rates;
-    rates.reserve(remaining.size());
+    rates.reserve(params.N);
     std::vector<int> m_values;
-    m_values.reserve(remaining.size());
+    m_values.reserve(params.N);
 
-    while(!remaining.empty()) {
+    while(remaining_triangles > 0) {
         candidates.clear();
         rates.clear();
         m_values.clear();
 
-        for(int i : remaining) {
-            int m_i = 0;
-            for(int j : params.neighbors[i]) {
-                if(remaining.count(j)) {
-                    m_i++;
+        for(uint32_t i = 0; i < params.N; i++) {
+            if(is_remaining[i]) {
+                int m_i = 0;
+                for(int j : params.neighbors[i]) {
+                    if(is_remaining[j]) {
+                        m_i++;
+                    }
                 }
-            }
-            double rate_i = params.m_rates[m_i];
+                double rate_i = params.m_rates[m_i];
 
-            candidates.push_back(i);
-            rates.push_back(rate_i);
-            m_values.push_back(m_i);
+                candidates.push_back(i);
+                rates.push_back(rate_i);
+                m_values.push_back(m_i);
+            }
         }
 
         // Calculate total rate
@@ -175,10 +180,11 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double be
         int m_removed = m_values[choice];
         remaining_bonds -= m_removed;
 
-        remaining.erase(removed);
+        is_remaining[removed] = 0;
+        remaining_triangles--;
 
         result.time.push_back(t);
-        result.n.push_back(remaining.size());
+        result.n.push_back(remaining_triangles);
         result.b.push_back(remaining_bonds);
         result.removed_triangle.push_back(removed);
         result.broken_bonds.push_back(m_removed);
