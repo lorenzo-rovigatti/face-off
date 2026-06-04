@@ -9,6 +9,63 @@
 #include <fmt/core.h>
 #include <fmt/format.h>
 
+// Structure to hold some structural parameters of the capsid and precompute rates for different m values
+struct CapsidParameters {
+    uint32_t N;
+    std::vector<std::tuple<int, int, int>> faces;
+    std::vector<std::vector<int>> neighbors;
+    std::set<int> triangles;
+    std::vector<double> m_rates;
+
+    CapsidParameters(std::vector<std::tuple<int, int, int>> &mfaces, double beta_eps, double nu): 
+            N(mfaces.size()), 
+            faces(mfaces),
+            neighbors(mfaces.size()) {
+        std::map<std::pair<int, int>, std::vector<int>> edge_to_faces;
+    
+        for(uint32_t f_id = 0; f_id < faces.size(); ++f_id) {
+            auto [v0, v1, v2] = faces[f_id];
+            std::vector<int> vertices = {v0, v1, v2};
+            
+            for(int i = 0; i < 3; i++) {
+                int a = vertices[i];
+                int b = vertices[(i + 1) % 3];
+                std::pair<int, int> edge = {std::min(a, b), std::max(a, b)};
+                edge_to_faces[edge].push_back(f_id);
+            }
+
+            triangles.insert(f_id);
+        }
+
+        std::map<int, std::set<int>> neighbors_set;
+        for(uint32_t i = 0; i < N; i++) {
+            neighbors_set[i] = std::set<int>();
+        }
+
+        for(const auto& [edge, attached] : edge_to_faces) {
+            if(attached.size() == 2) {
+                int i = attached[0];
+                int j = attached[1];
+                neighbors_set[i].insert(j);
+                neighbors_set[j].insert(i);
+            }
+        }
+
+        // Convert sets to sorted vectors
+        uint32_t max_m = 0;
+        for(uint32_t i = 0; i < N; i++) {
+            neighbors[i] = std::vector<int>(neighbors_set[i].begin(), neighbors_set[i].end());
+            std::sort(neighbors[i].begin(), neighbors[i].end());
+            neighbors[i].size() > max_m ? max_m = neighbors[i].size() : max_m = max_m;
+        }
+
+        m_rates.resize(max_m + 1);
+        for(uint32_t m = 0; m <= max_m; m++) {
+            m_rates[m] = nu * std::exp(-beta_eps * m);
+        }
+    }
+};
+
 // Structure to hold simulation results
 struct SimulationResult {
     std::vector<double> time;
@@ -17,6 +74,15 @@ struct SimulationResult {
     std::vector<int> b;
     std::vector<int> removed_triangle;
     std::vector<int> broken_bonds;
+
+    SimulationResult(uint32_t N) {
+        time.reserve(N);
+        n.reserve(N);
+        b.reserve(N);
+        removed_triangle.reserve(N);
+        broken_bonds.reserve(N);
+
+    }
 };
 
 // Structure to hold averaged results
@@ -30,58 +96,11 @@ struct AveragedResult {
     std::vector<double> b_std;
 };
 
-// Create the icosahedron graph neighbor structure
-std::map<int, std::vector<int>> make_icosahedron_graph() {
-    std::vector<std::tuple<int, int, int>> faces = {
-        {0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
-        {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
-        {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
-        {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1},
-    };
-
-    std::map<std::pair<int, int>, std::vector<int>> edge_to_faces;
-    
-    for(uint32_t f_id = 0; f_id < faces.size(); ++f_id) {
-        auto [v0, v1, v2] = faces[f_id];
-        std::vector<int> vertices = {v0, v1, v2};
-        
-        for(int i = 0; i < 3; i++) {
-            int a = vertices[i];
-            int b = vertices[(i + 1) % 3];
-            std::pair<int, int> edge = {std::min(a, b), std::max(a, b)};
-            edge_to_faces[edge].push_back(f_id);
-        }
-    }
-
-    std::map<int, std::set<int>> neighbors_set;
-    for(int i = 0; i < 20; i++) {
-        neighbors_set[i] = std::set<int>();
-    }
-
-    for(const auto& [edge, attached] : edge_to_faces) {
-        if(attached.size() == 2) {
-            int i = attached[0];
-            int j = attached[1];
-            neighbors_set[i].insert(j);
-            neighbors_set[j].insert(i);
-        }
-    }
-
-    // Convert sets to sorted vectors
-    std::map<int, std::vector<int>> neighbors;
-    for(int i = 0; i < 20; i++) {
-        neighbors[i] = std::vector<int>(neighbors_set[i].begin(), neighbors_set[i].end());
-        std::sort(neighbors[i].begin(), neighbors[i].end());
-    }
-
-    return neighbors;
-}
-
-// Count intact bonds in the remaining set
-int count_intact_bonds(const std::set<int>& remaining, const std::map<int, std::vector<int>>& neighbors) {
+// Count intact bonds in the remaining set: it's a slow function, use it only for debugging or to compute the initial number of bonds
+int count_intact_bonds(const std::set<int>& remaining, const std::vector<std::vector<int>>& neighbors) {
     int b = 0;
     for(int i : remaining) {
-        for(int j : neighbors.at(i)) {
+        for(int j : neighbors[i]) {
             if(remaining.count(j) && j > i) {
                 b++;
             }
@@ -91,33 +110,40 @@ int count_intact_bonds(const std::set<int>& remaining, const std::map<int, std::
 }
 
 // Main Gillespie disassembly simulation
-SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors, double beta_eps, double nu, unsigned int seed) {
+SimulationResult gillespie_disassembly(const CapsidParameters& params, double beta_eps, double nu, unsigned int seed) {
     std::mt19937 gen(seed != 0 ? seed : std::random_device{}());
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
-    std::set<int> remaining;
-    for(int i = 0; i < 20; i++) {
-        remaining.insert(i);
-    }
+    std::set<int> remaining = params.triangles;
 
     double t = 0.0;
-    SimulationResult result;
+    SimulationResult result(params.N + 1);
     result.time.push_back(0.0);
     result.broken_bonds.push_back(0);
+    int remaining_bonds = count_intact_bonds(remaining, params.neighbors);
+
+    std::vector<int> candidates;
+    candidates.reserve(remaining.size());
+    std::vector<double> rates;
+    rates.reserve(remaining.size());
+    std::vector<int> m_values;
+    m_values.reserve(remaining.size());
+    std::vector<double> probs;
+    probs.reserve(remaining.size());
 
     while(!remaining.empty()) {
-        std::vector<int> candidates;
-        std::vector<double> rates;
-        std::vector<int> m_values;
+        candidates.clear();
+        rates.clear();
+        m_values.clear();
 
         for(int i : remaining) {
             int m_i = 0;
-            for(int j : neighbors[i]) {
+            for(int j : params.neighbors[i]) {
                 if(remaining.count(j)) {
                     m_i++;
                 }
             }
-            double rate_i = nu * std::exp(-beta_eps * m_i);
+            double rate_i = params.m_rates[m_i];
 
             candidates.push_back(i);
             rates.push_back(rate_i);
@@ -136,9 +162,9 @@ SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors
         t += dt;
 
         // Sample which vertex is removed using categorical distribution
-        std::vector<double> probs(rates.size());
+        probs.clear();
         for(size_t i = 0; i < rates.size(); i++) {
-            probs[i] = rates[i] / K;
+            probs.push_back(rates[i] / K);
         }
 
         double u2 = uniform(gen);
@@ -154,12 +180,13 @@ SimulationResult gillespie_disassembly(std::map<int, std::vector<int>> neighbors
 
         int removed = candidates[choice];
         int m_removed = m_values[choice];
+        remaining_bonds -= m_removed;
 
         remaining.erase(removed);
 
         result.time.push_back(t);
         result.n.push_back(remaining.size());
-        result.b.push_back(count_intact_bonds(remaining, neighbors));
+        result.b.push_back(remaining_bonds);
         result.removed_triangle.push_back(removed);
         result.broken_bonds.push_back(m_removed);
     }
@@ -309,12 +336,19 @@ int main(int argc, char* argv[]) {
     fmt::println("");
 
     std::vector<SimulationResult> trajectories;
-    auto neighbors = make_icosahedron_graph();
+
+    std::vector<std::tuple<int, int, int>> faces = {
+        {0, 11, 5}, {0, 5, 1}, {0, 1, 7}, {0, 7, 10}, {0, 10, 11},
+        {1, 5, 9}, {5, 11, 4}, {11, 10, 2}, {10, 7, 6}, {7, 1, 8},
+        {3, 9, 4}, {3, 4, 2}, {3, 2, 6}, {3, 6, 8}, {3, 8, 9},
+        {4, 9, 5}, {2, 4, 11}, {6, 2, 10}, {8, 6, 7}, {9, 8, 1},
+    };
+    CapsidParameters params(faces, beta_eps, nu);
     
     // Run multiple trajectories
     for(unsigned int i = 0; i < n_trajectories; i++) {
         unsigned int traj_seed = seed + i;
-        auto result = gillespie_disassembly(neighbors, beta_eps, nu, traj_seed);
+        auto result = gillespie_disassembly(params, beta_eps, nu, traj_seed);
         trajectories.push_back(result);
         
         if(n_trajectories <= 3) {
