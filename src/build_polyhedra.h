@@ -7,6 +7,7 @@
 #include <set>
 #include <algorithm>
 #include <iostream>
+#include <cstdint>
 
 using Face = std::tuple<int,int,int>;
 

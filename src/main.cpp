@@ -171,12 +171,12 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double be
 
 // Print simulation results
 void print_results(const SimulationResult& result) {
-    fmt::println("Waiting time: {:.6f}", result.waiting_time);
-    fmt::println("\nSimulation timeline:");
-    fmt::println("{:>12} {:>8} {:>8} {:>12} {:>12}", "Time", "N", "B", "Removed", "BrokenBonds");
+    fmt::print("Waiting time: {:.6f}\n", result.waiting_time);
+    fmt::print("\nSimulation timeline:\n");
+    fmt::print("{:>12} {:>8} {:>8} {:>12} {:>12}\n", "Time", "N", "B", "Removed", "BrokenBonds");
     
     for(size_t i = 0; i < result.time.size(); i++) {
-        fmt::println("{:>12.6f} {:>8d} {:>8d} {:>12d} {:>12d}",
+        fmt::print("{:>12.6f} {:>8d} {:>8d} {:>12d} {:>12d}\n",
                     result.time[i],
                     result.n[i],
                     result.b[i],
@@ -298,9 +298,9 @@ int main(int argc, char* argv[]) {
         seed = std::stoul(argv[4]);
     }
 
-    fmt::println("Running Gillespie disassembly simulation...");
-    fmt::println("Parameters: beta_eps={}, nu={}, trajectories={}, seed={}", beta_eps, nu, n_trajectories, seed);
-    fmt::println("");
+    fmt::print("Running Gillespie disassembly simulation...\n");
+    fmt::print("Parameters: beta_eps={}, nu={}, trajectories={}, seed={}\n", beta_eps, nu, n_trajectories, seed);
+    fmt::print("\n");
 
     std::vector<SimulationResult> trajectories;
 
@@ -313,7 +313,7 @@ int main(int argc, char* argv[]) {
         for(int nb : n) {
             fmt::print("{} ", nb);
         }
-        fmt::println("");
+        fmt::print("\n");
     }
     
     // Run multiple trajectories
@@ -323,17 +323,17 @@ int main(int argc, char* argv[]) {
         trajectories.push_back(result);
         
         if(n_trajectories <= 3) {
-            fmt::println("Trajectory {}:", (i + 1));
+            fmt::print("Trajectory {}:\n", (i + 1));
             print_results(result);
-            fmt::println("");
+            fmt::print("\n");
         } 
         else if((i + 1) % std::max(1u, n_trajectories / 10) == 0) {
-            fmt::println("Completed {}/{} trajectories...", (i + 1), n_trajectories);
+            fmt::print("Completed {}/{} trajectories...\n", (i + 1), n_trajectories);
         }
     }
 
     if(n_trajectories > 1) {
-        fmt::println("\n=== AVERAGED RESULTS ===");
+        fmt::print("\n=== AVERAGED RESULTS ===\n");
         auto averaged = compute_averaged_results(trajectories, 1000);
         print_averaged_results(averaged);
     }
