@@ -44,6 +44,8 @@ endif()
 
 add_definitions(-Wall -Wshadow -Wextra -Wno-unused-parameter)
 
+include_directories(extern/cxxopts-3.3.1)
+
 # Find fmt library
 find_package(fmt REQUIRED)
 

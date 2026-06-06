@@ -1,5 +1,7 @@
 #include "build_polyhedra.h"
 
+#include <cxxopts.hpp>
+
 #include <vector>
 #include <set>
 #include <map>
@@ -278,43 +280,76 @@ void print_averaged_results(const AveragedResult& averaged) {
 }
 
 int main(int argc, char* argv[]) {
-    // Parameters
-    double beta_eps = 1.0;  // Energy parameter
-    double nu = 1.0;        // Attempt frequency
-    unsigned int n_trajectories = 1;  // Number of trajectories to average
-    unsigned int seed = 42; // Random seed forreproducibility
-
-    // Parse command line arguments
-    if(argc > 1) {
-        beta_eps = std::stod(argv[1]);
+    // Parse command line arguments with cxxopts
+    cxxopts::Options options("face-off", "Gillespie disassembly simulation for viral capsids");
+    
+    options.add_options()
+        ("beta_eps", "Energy parameter (alternative to specifying beta and eps separately)", cxxopts::value<double>())
+        ("beta", "Beta parameter", cxxopts::value<double>())
+        ("eps", "Epsilon parameter", cxxopts::value<double>())
+        ("nu", "Attempt frequency", cxxopts::value<double>()->default_value("1.0"))
+        ("trajectories", "Number of trajectories to average", cxxopts::value<unsigned int>()->default_value("1"))
+        ("seed", "Random seed for reproducibility", cxxopts::value<unsigned int>()->default_value("42"))
+        ("capsid", "Capsid type: 'aav' or 'icosahedron'", cxxopts::value<std::string>()->default_value("icosahedron"))
+        ("help", "Print help");
+    
+    double beta_eps;
+    double nu;
+    unsigned int n_trajectories;
+    unsigned int seed;
+    std::string capsid_type;
+    std::vector<std::vector<int>> neighbors;
+    
+    try {
+        auto result = options.parse(argc, argv);
+        
+        if(result.count("help")) {
+            fmt::print("{}\n", options.help());
+            return 0;
+        }
+        
+        // Determine beta_eps
+        beta_eps = 1.0;  // Default value
+        if(result.count("beta_eps")) {
+            beta_eps = result["beta_eps"].as<double>();
+        }
+        else if(result.count("beta") && result.count("eps")) {
+            beta_eps = result["beta"].as<double>() * result["eps"].as<double>();
+        }
+        else if(result.count("beta") || result.count("eps")) {
+            fmt::print("Error: Both --beta and --eps must be specified if not using --beta_eps\n");
+            return 1;
+        }
+        
+        nu = result["nu"].as<double>();
+        n_trajectories = result["trajectories"].as<unsigned int>();
+        seed = result["seed"].as<unsigned int>();
+        capsid_type = result["capsid"].as<std::string>();
+        
+        // Select capsid type
+        if(capsid_type == "aav") {
+            neighbors = AAV_neighbors();
+        }
+        else if(capsid_type == "icosahedron") {
+            neighbors = icosahedron_neighbors();
+        }
+        else {
+            fmt::print("Error: Unknown capsid type '{}'. Use 'aav' or 'icosahedron'\n", capsid_type);
+            return 1;
+        }
     }
-    if(argc > 2) {
-        nu = std::stod(argv[2]);
-    }
-    if(argc > 3) {
-        n_trajectories = std::stoul(argv[3]);
-    }
-    if(argc > 4) {
-        seed = std::stoul(argv[4]);
+    catch(const cxxopts::exceptions::exception& e) {
+        fmt::print("Error parsing arguments: {}\n", e.what());
+        fmt::print("{}\n", options.help());
+        return 1;
     }
 
     fmt::print("Running Gillespie disassembly simulation...\n");
-    fmt::print("Parameters: beta_eps={}, nu={}, trajectories={}, seed={}\n", beta_eps, nu, n_trajectories, seed);
+    fmt::print("Parameters: beta_eps={}, nu={}, trajectories={}, seed={}, capsid={}\n", beta_eps, nu, n_trajectories, seed, capsid_type);
     fmt::print("\n");
 
     std::vector<SimulationResult> trajectories;
-
-    auto neighbors = AAV_neighbors();
-    // auto neighbors = icosahedron_neighbors();
     CapsidParameters params(neighbors, beta_eps, nu);
-
-    for(auto n : params.neighbors) {
-        fmt::print("Neighbors: ");
-        for(int nb : n) {
-            fmt::print("{} ", nb);
-        }
-        fmt::print("\n");
-    }
     
     // Run multiple trajectories
     for(unsigned int i = 0; i < n_trajectories; i++) {
