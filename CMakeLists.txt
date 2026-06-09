@@ -49,8 +49,10 @@ include_directories(extern/cxxopts-3.3.1)
 # Find fmt library
 find_package(fmt REQUIRED)
 
-# Add the executable
-add_executable(face-off src/main.cpp)
+# Add the executables
+add_executable(empty_capsids src/empty_capsids.cpp)
+add_executable(full_capsids src/full_capsids.cpp)
 
 # Link fmt library
-target_link_libraries(face-off fmt::fmt)
+target_link_libraries(empty_capsids fmt::fmt)
+target_link_libraries(full_capsids fmt::fmt)

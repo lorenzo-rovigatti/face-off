@@ -57,6 +57,21 @@ struct SimulationResult {
 
 // Structure to hold averaged results
 struct AveragedResult {
+        AveragedResult(uint32_t N_time_grid, double max_time) {
+            // build the common time grid
+            double dt = max_time / (N_time_grid - 1);
+            time.resize(N_time_grid);
+            for(uint32_t i = 0; i < N_time_grid; i++) {
+                time[i] = dt * i;
+            }
+
+            // Average n and bonds at each step
+            n_mean.resize(N_time_grid, 0.0);
+            n_std.resize(N_time_grid, 0.0);
+            b_mean.resize(N_time_grid, 0.0);
+            b_std.resize(N_time_grid, 0.0);
+        }
+
     std::vector<double> time;
     double waiting_time_mean;
     double waiting_time_std;
@@ -82,7 +97,7 @@ int count_intact_bonds(const std::vector<int>& is_remaining, const std::vector<s
 }
 
 // Main Gillespie disassembly simulation
-SimulationResult gillespie_disassembly(const CapsidParameters& params, double beta_eps, double nu, unsigned int seed) {
+SimulationResult gillespie_disassembly(const CapsidParameters& params, double nu, unsigned int seed) {
     std::mt19937 gen(seed != 0 ? seed : std::random_device{}());
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
@@ -190,7 +205,7 @@ void print_results(const SimulationResult& result) {
 // Compute averages over multiple trajectories
 AveragedResult compute_averaged_results(const std::vector<SimulationResult>& trajectories, uint32_t N_time_grid) {
     if(trajectories.empty()) {
-        return AveragedResult();
+        return AveragedResult(N_time_grid, 0.0);
     }
 
     size_t n_traj = trajectories.size();
@@ -201,7 +216,7 @@ AveragedResult compute_averaged_results(const std::vector<SimulationResult>& tra
         max_time = std::max(max_time, traj.time.back());
     }
 
-    AveragedResult averaged;
+    AveragedResult averaged(N_time_grid, max_time);
 
     // build the common time grid
     double dt = max_time / (N_time_grid - 1);
@@ -220,12 +235,6 @@ AveragedResult compute_averaged_results(const std::vector<SimulationResult>& tra
     averaged.waiting_time_mean = waiting_time_sum / n_traj;
     double waiting_time_var = (waiting_time_sq_sum / n_traj) - (averaged.waiting_time_mean * averaged.waiting_time_mean);
     averaged.waiting_time_std = std::sqrt(std::max(0.0, waiting_time_var));
-
-    // Average n and b at each step
-    averaged.n_mean.resize(N_time_grid, 0.0);
-    averaged.n_std.resize(N_time_grid, 0.0);
-    averaged.b_mean.resize(N_time_grid, 0.0);
-    averaged.b_std.resize(N_time_grid, 0.0);
 
     std::vector<double> n_sq_sum(N_time_grid, 0.0);
     std::vector<double> b_sq_sum(N_time_grid, 0.0);
@@ -264,8 +273,8 @@ AveragedResult compute_averaged_results(const std::vector<SimulationResult>& tra
 }
 
 // Print averaged results
-void print_averaged_results(const AveragedResult& averaged) {
-    std::ofstream ofs("results.dat");
+void print_averaged_results(const std::string& filename, const AveragedResult& averaged) {
+    std::ofstream ofs(filename);
     
     ofs << fmt::format("# Waiting time: {:.6f} ± {:.6f}", averaged.waiting_time_mean, averaged.waiting_time_std) << std::endl;
     ofs << fmt::format("# {:>12} {:>16} {:>16} {:>16} {:>16}", "Time", "N_mean", "N_std", "B_mean", "B_std") << std::endl;
@@ -285,12 +294,13 @@ int main(int argc, char* argv[]) {
     
     options.add_options()
         ("beta_eps", "Energy parameter (alternative to specifying beta and eps separately)", cxxopts::value<double>())
-        ("beta", "Beta parameter", cxxopts::value<double>())
+        ("temperature,T", "Temperature", cxxopts::value<double>())
         ("eps", "Epsilon parameter", cxxopts::value<double>())
         ("nu", "Attempt frequency", cxxopts::value<double>()->default_value("1.0"))
         ("trajectories", "Number of trajectories to average", cxxopts::value<unsigned int>()->default_value("1"))
         ("seed", "Random seed for reproducibility", cxxopts::value<unsigned int>()->default_value("42"))
         ("capsid", "Capsid type: 'aav' or 'icosahedron'", cxxopts::value<std::string>()->default_value("icosahedron"))
+        ("output", "Output filename for averaged results", cxxopts::value<std::string>()->default_value("results.dat"))
         ("help", "Print help");
     
     double beta_eps;
@@ -299,6 +309,7 @@ int main(int argc, char* argv[]) {
     unsigned int seed;
     std::string capsid_type;
     std::vector<std::vector<int>> neighbors;
+    std::string filename;
     
     try {
         auto result = options.parse(argc, argv);
@@ -309,15 +320,14 @@ int main(int argc, char* argv[]) {
         }
         
         // Determine beta_eps
-        beta_eps = 1.0;  // Default value
         if(result.count("beta_eps")) {
             beta_eps = result["beta_eps"].as<double>();
         }
-        else if(result.count("beta") && result.count("eps")) {
-            beta_eps = result["beta"].as<double>() * result["eps"].as<double>();
+        else if(result.count("T") && result.count("eps")) {
+            beta_eps = result["eps"].as<double>() / result["T"].as<double>();
         }
-        else if(result.count("beta") || result.count("eps")) {
-            fmt::print("Error: Both --beta and --eps must be specified if not using --beta_eps\n");
+        else {
+            fmt::print("Error: Either --beta_eps or both --T and --eps must be specified\n");
             return 1;
         }
         
@@ -325,6 +335,7 @@ int main(int argc, char* argv[]) {
         n_trajectories = result["trajectories"].as<unsigned int>();
         seed = result["seed"].as<unsigned int>();
         capsid_type = result["capsid"].as<std::string>();
+        filename = result["output"].as<std::string>();
         
         // Select capsid type
         if(capsid_type == "aav") {
@@ -354,7 +365,7 @@ int main(int argc, char* argv[]) {
     // Run multiple trajectories
     for(unsigned int i = 0; i < n_trajectories; i++) {
         unsigned int traj_seed = seed + i;
-        auto result = gillespie_disassembly(params, beta_eps, nu, traj_seed);
+        auto result = gillespie_disassembly(params, nu, traj_seed);
         trajectories.push_back(result);
         
         if(n_trajectories <= 3) {
@@ -368,9 +379,9 @@ int main(int argc, char* argv[]) {
     }
 
     if(n_trajectories > 1) {
-        fmt::print("\n=== AVERAGED RESULTS ===\n");
         auto averaged = compute_averaged_results(trajectories, 1000);
-        print_averaged_results(averaged);
+        print_averaged_results(filename, averaged);
+        fmt::print("\n=== AVERAGES PRINTED TO {} ===\n", filename);
     }
 
     return 0;
