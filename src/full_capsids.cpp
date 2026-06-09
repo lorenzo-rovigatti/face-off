@@ -15,36 +15,30 @@
 
 // Structure to hold some structural parameters of the capsid and precompute rates for different m values
 struct CapsidParameters {
-    uint32_t N;
-    std::vector<std::vector<int>> neighbors;      // Inter-triangle neighbor graph
-    std::vector<double> m_inter_rates;            // Precomputed rates for different inter-bond counts
-    std::vector<double> m_combined_rates;         // Precomputed rates for different combined bond counts
-    double beta_eps_protein;                      // Energy parameter for protein-protein interactions
-    double beta_eps_polymer;                      // Energy parameter for polymer-protein interactions
+    int N;
+    // Inter-triangle neighbor graph
+    std::vector<std::vector<int>> neighbors;
+    // Precomputed rates for different inter-bond counts
+    std::vector<double> protein_rates;
+    // Precomputed rates for different combined bond counts
+    double polymer_rate;
 
-    CapsidParameters(const std::vector<std::vector<int>> &mneighbors, double mbeta_eps_protein, double mbeta_eps_polymer, double nu): 
+    CapsidParameters(const std::vector<std::vector<int>> &mneighbors, double beta_eps_protein, double beta_eps_polymer, double nu): 
             N(mneighbors.size()), 
-            neighbors(mneighbors),
-            beta_eps_protein(mbeta_eps_protein),
-            beta_eps_polymer(mbeta_eps_polymer) {
+            neighbors(mneighbors) {
 
         // Precompute rates for inter-triangle bonds (0-3)
-        uint32_t max_m = 0;
-        for(uint32_t i = 0; i < N; i++) {
-            neighbors[i].size() > max_m ? max_m = neighbors[i].size() : max_m = max_m;
+        int max_m = 0;
+        for(int i = 0; i < N; i++) {
+            max_m = std::max(max_m, static_cast<int>(neighbors[i].size()));
         }
 
-        m_inter_rates.resize(max_m + 1);
-        for(uint32_t m = 0; m <= max_m; m++) {
-            m_inter_rates[m] = nu * std::exp(-beta_eps_protein * m);
+        protein_rates.resize(max_m + 1);
+        for(int m = 0; m <= max_m; m++) {
+            protein_rates[m] = nu * std::exp(-beta_eps_protein * m);
         }
         
-        // Precompute rates for combined bonds (useful for future polymer integration)
-        // For now, this just accounts for inter-bonds (polymer integration will extend this)
-        m_combined_rates.resize(max_m + 2);  // +2 to account for possible polymer bond
-        for(uint32_t m = 0; m <= max_m + 1; m++) {
-            m_combined_rates[m] = nu * std::exp(-beta_eps_polymer * m);  // Combined energy penalty
-        }
+        polymer_rate = nu * std::exp(-beta_eps_polymer);
     }
 };
 
@@ -59,7 +53,7 @@ struct SimulationResult {
     std::vector<int> broken_inter_bonds;   // Number of inter-bonds broken in each event
     std::vector<int> broken_polymer_bonds; // Number of polymer bonds broken in each event
 
-    SimulationResult(uint32_t N) {
+    SimulationResult(int N) {
         time.reserve(N);
         n.reserve(N);
         b_inter.reserve(N);
@@ -72,11 +66,11 @@ struct SimulationResult {
 
 // Structure to hold averaged results
 struct AveragedResult {
-    AveragedResult(uint32_t N_time_grid, double max_time) {
+    AveragedResult(int N_time_grid, double max_time) {
         // build the common time grid
         double dt = max_time / (N_time_grid - 1);
         time.resize(N_time_grid);
-        for(uint32_t i = 0; i < N_time_grid; i++) {
+        for(int i = 0; i < N_time_grid; i++) {
             time[i] = dt * i;
         }
 
@@ -105,9 +99,9 @@ int count_intact_inter_bonds(const std::vector<Triangle>& triangles,
                               const std::vector<std::vector<int>>& neighbors) {
     int b = 0;
     for(size_t i = 0; i < triangles.size(); i++) {
-        if(triangles[i].is_remaining) {
+        if(triangles[i].num_inter_bonds > 0) {
             for(int j : neighbors[i]) {
-                if(triangles[j].is_remaining && j > (int)i) {
+                if(triangles[j].num_inter_bonds > 0 && j > (int)i) {
                     b++;
                 }
             }
@@ -120,27 +114,30 @@ int count_intact_inter_bonds(const std::vector<Triangle>& triangles,
 int count_intact_polymer_bonds(const std::vector<Triangle>& triangles) {
     int b = 0;
     for(const auto& t : triangles) {
-        if(t.is_remaining) {
-            b += t.num_polymer_bonds;
-        }
+        b += t.num_polymer_bonds;
     }
     return b;
 }
+
+// Main Gillespie disassembly simulation
+enum EventType : uint8_t {
+    LOSE_INTER_BONDS = 0,   // Triangle detaches from capsid
+    LOSE_POLYMER_BOND = 1   // Triangle detaches from polymer
+};
+
+// Compact event representation: which triangle, which type of event
+struct CandidateEvent {
+    int triangle_id;
+    EventType event_type;
+};
 
 // Main Gillespie disassembly simulation
 SimulationResult gillespie_disassembly(const CapsidParameters& params, double nu, unsigned int seed) {
     std::mt19937 gen(seed != 0 ? seed : std::random_device{}());
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
-    // Initialize triangles
-    std::vector<Triangle> triangles(params.N);
-    
-    // Initialize inter-triangle bonds based on the neighbor graph
-    for(uint32_t i = 0; i < params.N; i++) {
-        triangles[i].num_inter_bonds = static_cast<uint8_t>(params.neighbors[i].size());
-    }
-    // For now, no polymer bonds are initialized (will be set when polymer is added)
-    // triangles[i].num_polymer_bonds = 0;  // Already 0 by default constructor
+    // Initialize triangles with 3 protein bonds and 1 polymer bond each
+    std::vector<Triangle> triangles(params.N, Triangle(3, 1));
 
     double t = 0.0;
     SimulationResult result(params.N + 1);
@@ -150,91 +147,110 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double nu
     
     int remaining_inter_bonds = count_intact_inter_bonds(triangles, params.neighbors);
     int remaining_polymer_bonds = count_intact_polymer_bonds(triangles);
-    int remaining_triangles = params.N;
+    int fully_detached_triangles = 0;  // Count of triangles with no bonds at all
 
-    std::vector<int> candidates;
-    candidates.reserve(params.N);
-    std::vector<double> rates;
-    rates.reserve(params.N);
-    std::vector<uint8_t> m_inter_values;
-    m_inter_values.reserve(params.N);
-    std::vector<uint8_t> m_polymer_values;
-    m_polymer_values.reserve(params.N);
+    // Storage for events (up to 2 events per triangle: lose inter-bonds or lose polymer-bond)
+    std::vector<CandidateEvent> events;
+    events.reserve(params.N * 2);
+    std::vector<double> event_rates;
+    event_rates.reserve(params.N * 2);
 
-    while(remaining_triangles > 0) {
-        candidates.clear();
-        rates.clear();
-        m_inter_values.clear();
-        m_polymer_values.clear();
+    // Loop continues while there are triangles with at least one bond (inter or polymer)
+    while(fully_detached_triangles < params.N) {
+        events.clear();
+        event_rates.clear();
 
-        // Calculate rates for all remaining triangles based on their bonds
-        for(uint32_t i = 0; i < params.N; i++) {
-            if(triangles[i].is_remaining) {
+        // For each triangle, enumerate all possible competing events
+        for(int i = 0; i < params.N; i++) {
+            // Triangle must have at least one bond to have events
+            bool has_inter_bonds = triangles[i].num_inter_bonds > 0;
+            bool has_polymer_bonds = triangles[i].num_polymer_bonds > 0;
+            
+            // Event A: Triangle loses inter-bonds (detaches from capsid, but may stay via polymer)
+            if(has_inter_bonds) {
                 // Count intact inter-triangle bonds for this triangle
-                uint8_t m_inter = 0;
+                // Only count neighbors that still have inter-bonds (in capsid)
+                int m_inter = 0;
                 for(int j : params.neighbors[i]) {
-                    if(triangles[j].is_remaining) {
+                    if(triangles[j].num_inter_bonds > 0) {
                         m_inter++;
                     }
                 }
                 
-                // For now, polymer bonds are static (will be updated when polymer is integrated)
-                uint8_t m_polymer = triangles[i].num_polymer_bonds;
-                
-                // Rate based on inter-triangle bonds (polymer will be integrated later)
-                double rate_i = params.m_inter_rates[std::min(static_cast<uint32_t>(m_inter), 
-                                                              static_cast<uint32_t>(params.m_inter_rates.size() - 1))];
-
-                candidates.push_back(i);
-                rates.push_back(rate_i);
-                m_inter_values.push_back(m_inter);
-                m_polymer_values.push_back(m_polymer);
+                double rate_lose_inter = params.protein_rates[m_inter];
+                events.push_back({i, LOSE_INTER_BONDS});
+                event_rates.push_back(rate_lose_inter);
+            }
+            
+            // Event B: Triangle loses polymer-bond (stays in system via capsid or loses everything)
+            if(has_polymer_bonds) {
+                events.push_back({i, LOSE_POLYMER_BOND});
+                event_rates.push_back(params.polymer_rate);
             }
         }
 
-        // Calculate total rate
-        double K = 0.0;
-        for(double rate : rates) {
-            K += rate;
-        }
+        // Calculate total rate (sum of all competing events)
+        double K = std::accumulate(event_rates.begin(), event_rates.end(), 0.0);
 
         // Sample time to next event
         double u = uniform(gen);
         double dt = -std::log(u) / K;
         t += dt;
 
-        // Sample which triangle is removed using categorical distribution
+        // Sample which event fires using categorical distribution
         double u2 = uniform(gen);
         double cumsum = 0.0;
-        int choice = 0;
-        for(size_t i = 0; i < rates.size(); i++) {
-            cumsum += rates[i] / K;  // normalize to get cumulative probabilities
+        size_t chosen_event_idx = 0;
+        for(size_t i = 0; i < event_rates.size(); i++) {
+            cumsum += event_rates[i] / K;  // normalize to get cumulative probabilities
             if(u2 <= cumsum) {
-                choice = i;
+                chosen_event_idx = i;
                 break;
             }
         }
 
-        int removed_idx = candidates[choice];
-        uint8_t m_inter_removed = m_inter_values[choice];
-        uint8_t m_polymer_removed = m_polymer_values[choice];
+        // Execute the chosen event
+        const CandidateEvent& event = events[chosen_event_idx];
+        int triangle_id = event.triangle_id;
         
-        remaining_inter_bonds -= m_inter_removed;
-        remaining_polymer_bonds -= m_polymer_removed;
+        if(event.event_type == LOSE_INTER_BONDS) {
+            // Triangle detaches from capsid structure
+            // Count how many inter-bonds it had
+            uint8_t m_inter_lost = 0;
+            for(int j : params.neighbors[triangle_id]) {
+                if(triangles[j].num_inter_bonds > 0) {
+                    m_inter_lost++;
+                }
+            }
+            
+            remaining_inter_bonds -= m_inter_lost;
+            triangles[triangle_id].num_inter_bonds = 0;
+            
+            result.broken_inter_bonds.push_back(m_inter_lost);
+            result.broken_polymer_bonds.push_back(0);
+        } 
+        else if(event.event_type == LOSE_POLYMER_BOND) {
+            // Triangle releases from polymer
+            remaining_polymer_bonds -= triangles[triangle_id].num_polymer_bonds;
+            triangles[triangle_id].num_polymer_bonds = 0;
 
-        triangles[removed_idx].detach();
-        remaining_triangles--;
+            result.broken_inter_bonds.push_back(0);
+            result.broken_polymer_bonds.push_back(1);
+        }
+
+        // Check if triangle is now fully detached (no bonds at all)
+        if(triangles[triangle_id].total_bonds() == 0) {
+            fully_detached_triangles++;
+        }
 
         result.time.push_back(t);
-        result.n.push_back(remaining_triangles);
+        result.n.push_back(params.N - fully_detached_triangles);
         result.b_inter.push_back(remaining_inter_bonds);
         result.b_polymer.push_back(remaining_polymer_bonds);
-        result.removed_triangle.push_back(removed_idx);
-        result.broken_inter_bonds.push_back(m_inter_removed);
-        result.broken_polymer_bonds.push_back(m_polymer_removed);
+        result.removed_triangle.push_back(triangle_id);
     }
 
-    // Adjust times so that t=0 coincides with first triangle detachment
+    // Adjust times so that t=0 coincides with first event
     double t_wait = result.time[1];
     result.waiting_time = t_wait;
     for(size_t i = 1; i < result.time.size(); i++) {
@@ -265,7 +281,7 @@ void print_results(const SimulationResult& result) {
 }
 
 // Compute averages over multiple trajectories
-AveragedResult compute_averaged_results(const std::vector<SimulationResult>& trajectories, uint32_t N_time_grid) {
+AveragedResult compute_averaged_results(const std::vector<SimulationResult>& trajectories, int N_time_grid) {
     if(trajectories.empty()) {
         return AveragedResult(N_time_grid, 0.0);
     }
@@ -296,11 +312,11 @@ AveragedResult compute_averaged_results(const std::vector<SimulationResult>& tra
     std::vector<double> b_polymer_sq_sum(N_time_grid, 0.0);
 
     for(const auto& traj : trajectories) {
-        uint32_t current_common_idx = 0;
+        int current_common_idx = 0;
         double common_time = averaged.time[current_common_idx];
-         for(uint32_t i = 1; i < traj.n.size(); i++) {
+         for(int i = 1; i < (int)traj.n.size(); i++) {
             double t = traj.time[i];
-            uint32_t prev_idx = i - 1;
+            int prev_idx = i - 1;
             while(common_time < t) {
                 averaged.n_mean[current_common_idx] += traj.n[prev_idx];
                 averaged.n_std[current_common_idx] += traj.n[prev_idx] * traj.n[prev_idx];
@@ -316,7 +332,7 @@ AveragedResult compute_averaged_results(const std::vector<SimulationResult>& tra
     }
 
     // Compute mean and std
-    for(size_t i = 0; i < N_time_grid; i++) {
+    for(int i = 0; i < N_time_grid; i++) {
         averaged.n_mean[i] /= n_traj;
         averaged.b_inter_mean[i] /= n_traj;
         averaged.b_polymer_mean[i] /= n_traj;

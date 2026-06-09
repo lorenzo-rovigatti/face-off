@@ -16,44 +16,17 @@
 // ============================================================================
 class Triangle {
 public:
-    // State members: compact representation using uint8_t
-    uint8_t num_inter_bonds;  // Number of bonds to other triangles (0-3)
-    uint8_t num_polymer_bonds; // Number of bonds to polymer (0-1)
+    int num_inter_bonds;  // Number of bonds to other triangles (0-3)
+    int num_polymer_bonds; // Number of bonds to polymer (0-1)
     bool is_remaining;         // Whether this triangle is still in the capsid
     
     // Constructor
-    explicit Triangle() 
-        : num_inter_bonds(0), num_polymer_bonds(0), is_remaining(true) {}
+    explicit Triangle(int initial_inter_bonds, int initial_polymer_bonds) 
+        : num_inter_bonds(initial_inter_bonds), num_polymer_bonds(initial_polymer_bonds), is_remaining(true) {}
     
     // Get total number of bonds
-    uint8_t total_bonds() const {
+    int total_bonds() const {
         return num_inter_bonds + num_polymer_bonds;
-    }
-    
-    // Get number of intact inter-triangle bonds (checks against a given set)
-    // This will be called during simulation with the current remaining set
-    uint8_t intact_inter_bonds(const std::vector<Triangle>& triangles, 
-                                 const std::vector<std::vector<int>>& neighbors,
-                                 int triangle_id) const {
-        if(!is_remaining) return 0;
-        
-        uint8_t count = 0;
-        for(int neighbor : neighbors[triangle_id]) {
-            if(triangles[neighbor].is_remaining) {
-                count++;
-            }
-        }
-        return count;
-    }
-    
-    // Detach this triangle: mark as not remaining
-    void detach() {
-        is_remaining = false;
-    }
-    
-    // Check if this triangle is attached to anything
-    bool is_attached() const {
-        return is_remaining && total_bonds() > 0;
     }
 };
 
