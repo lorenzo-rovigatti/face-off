@@ -50,9 +50,11 @@ include_directories(extern/cxxopts-3.3.1)
 find_package(fmt REQUIRED)
 
 # Add the executables
+add_executable(empty_capsids_bonds src/empty_capsids_bonds.cpp)
 add_executable(empty_capsids src/empty_capsids.cpp)
 add_executable(full_capsids src/full_capsids.cpp)
 
 # Link fmt library
+target_link_libraries(empty_capsids_bonds fmt::fmt)
 target_link_libraries(empty_capsids fmt::fmt)
 target_link_libraries(full_capsids fmt::fmt)
