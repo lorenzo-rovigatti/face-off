@@ -18,12 +18,13 @@ struct CapsidParameters {
     uint32_t N;
     std::vector<std::vector<int>> neighbors;
     double k_off;  // Per-bond breaking rate: nu * exp(-beta_eps)
-    // Future extension: add k_on (per-bond re-forming rate) here
+    double k_on;   // Per-bond re-forming rate (T-independent, same units as nu; 0 = irreversible)
 
-    CapsidParameters(const std::vector<std::vector<int>>& mneighbors, double beta_eps, double nu):
+    CapsidParameters(const std::vector<std::vector<int>>& mneighbors, double beta_eps, double nu, double k_on_param = 0.0):
             N(mneighbors.size()),
             neighbors(mneighbors),
-            k_off(nu * std::exp(-beta_eps))
+            k_off(nu * std::exp(-beta_eps)),
+            k_on(k_on_param)
     {}
 };
 
@@ -31,10 +32,11 @@ struct CapsidParameters {
 struct SimulationResult {
     std::vector<double> time;
     double waiting_time;
-    std::vector<int> n;            // Triangles remaining after each bond-break event
-    std::vector<int> b;            // Bonds remaining after each bond-break event
-    std::vector<int> event_bond_i; // Triangle i of the broken bond
-    std::vector<int> event_bond_j; // Triangle j of the broken bond
+    std::vector<int> n;                      // Triangles remaining after each event
+    std::vector<int> b;                      // Bonds remaining after each event
+    std::vector<int> event_bond_i;           // Triangle i of the affected bond
+    std::vector<int> event_bond_j;           // Triangle j of the affected bond
+    std::vector<bool> event_is_formation;    // true = bond formed, false = bond broken
 
     SimulationResult(uint32_t max_events) {
         time.reserve(max_events);
@@ -42,6 +44,7 @@ struct SimulationResult {
         b.reserve(max_events);
         event_bond_i.reserve(max_events);
         event_bond_j.reserve(max_events);
+        event_is_formation.reserve(max_events);
     }
 };
 
@@ -82,14 +85,14 @@ int count_intact_bonds(const std::vector<std::set<int>>& intact_bonds) {
     return b;
 }
 
-// Main Gillespie disassembly simulation: events are single bond breaks.
-// Triangles that lose all bonds detach immediately as a consequence.
+// Main Gillespie disassembly simulation: events are single bond breaks or re-formations.
+// A broken bond can re-form (at rate k_on) only if both endpoint triangles still have at
+// least one intact bond (i.e., neither has fully detached from the capsid).
+// Triangles that lose all bonds detach permanently.
 SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned int seed) {
     std::mt19937 gen(seed != 0 ? seed : std::random_device{}());
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
-    // Bond state: for each triangle, the set of neighbours it is currently bonded to.
-    // To add re-forming bonds in the future, track broken bonds in a parallel set here.
     std::vector<std::set<int>> intact_bonds(params.N);
     std::vector<bool> is_remaining(params.N, true);
 
@@ -102,51 +105,106 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
     int remaining_bonds = count_intact_bonds(intact_bonds);
     int remaining_triangles = params.N;
 
-    // Each bond breaks at most once, so pre-allocate for that many events.
-    SimulationResult result(remaining_bonds);
+    // With reversible bonds the event count is unbounded; reserve generously.
+    SimulationResult result(remaining_bonds * 4);
+
+    // Indexed set of re-formable bonds: O(1) random access, O(log n) insert/remove.
+    // Invariant: contains bond (i,j) with i<j iff it is an original neighbour pair,
+    // currently broken, and both endpoints are still in the capsid.
+    //
+    // Remove uses swap-with-last so the vector stays packed.
+    std::vector<std::pair<int,int>> formable_vec;
+    std::map<std::pair<int,int>, int> formable_idx;
+
+    const auto formable_insert = [&](int i, int j) {
+        if(i > j) std::swap(i, j);
+        auto key = std::make_pair(i, j);
+        formable_idx[key] = (int)formable_vec.size();
+        formable_vec.push_back(key);
+    };
+
+    const auto formable_remove = [&](int i, int j) {
+        if(i > j) std::swap(i, j);
+        auto key = std::make_pair(i, j);
+        auto it = formable_idx.find(key);
+        if(it == formable_idx.end()) return; // not in set (bond may still be intact)
+        int idx = it->second;
+        int last = (int)formable_vec.size() - 1;
+        if(idx != last) {
+            // Swap with the last element and fix its index entry.
+            formable_vec[idx] = formable_vec[last];
+            formable_idx[formable_vec[idx]] = idx;
+        }
+        formable_vec.pop_back();
+        formable_idx.erase(key);
+    };
 
     double t = 0.0;
 
-    // Gillespie loop: each event is the breaking of one bond.
+    // Gillespie loop: each event is either a bond break (k_off) or a bond re-formation (k_on).
     while(remaining_bonds > 0) {
-        // All intact bonds break at the same rate k_off; total rate scales linearly.
-        double K = remaining_bonds * params.k_off;
+        int n_formable = (int)formable_vec.size();
+        double K_break = remaining_bonds * params.k_off;
+        double K_form  = n_formable       * params.k_on;
+        double K       = K_break + K_form;
 
-        // Sample waiting time to next bond-break event.
+        // Sample waiting time.
         double dt = -std::log(uniform(gen)) / K;
         t += dt;
 
-        // Pick a bond uniformly at random (all rates are equal).
-        int bond_idx = std::min((int)(uniform(gen) * remaining_bonds), remaining_bonds - 1);
+        // Decide event type, then pick uniformly within that class.
+        bool is_formation = (uniform(gen) * K >= K_break);
 
-        // Walk the intact-bond adjacency to find the bond_idx-th bond (i < j).
         int chosen_i = -1, chosen_j = -1;
-        int count = 0;
-        for(uint32_t i = 0; i < params.N && chosen_i < 0; i++) {
-            if(!is_remaining[i]) continue;
-            for(int j : intact_bonds[i]) {
-                if(j > (int)i) {
-                    if(count == bond_idx) {
-                        chosen_i = (int)i;
-                        chosen_j = j;
-                        break;
+
+        if(!is_formation) {
+            // --- Break event ---
+            int bond_idx = std::min((int)(uniform(gen) * remaining_bonds), remaining_bonds - 1);
+            int cnt = 0;
+            for(uint32_t i = 0; i < params.N && chosen_i < 0; i++) {
+                if(!is_remaining[i]) continue;
+                for(int j : intact_bonds[i]) {
+                    if(j > (int)i) {
+                        if(cnt == bond_idx) { chosen_i = (int)i; chosen_j = j; break; }
+                        cnt++;
                     }
-                    count++;
                 }
             }
-        }
+            intact_bonds[chosen_i].erase(chosen_j);
+            intact_bonds[chosen_j].erase(chosen_i);
+            remaining_bonds--;
 
-        // Break the chosen bond on both endpoints.
-        intact_bonds[chosen_i].erase(chosen_j);
-        intact_bonds[chosen_j].erase(chosen_i);
-        remaining_bonds--;
-
-        // Detach any triangle that now has zero intact bonds.
-        for(int tri : {chosen_i, chosen_j}) {
-            if(is_remaining[tri] && intact_bonds[tri].empty()) {
-                is_remaining[tri] = false;
+            // Check each endpoint for detachment and update the formable set accordingly.
+            bool i_detached = false, j_detached = false;
+            if(intact_bonds[chosen_i].empty()) {
+                is_remaining[chosen_i] = false;
                 remaining_triangles--;
+                i_detached = true;
+                // All formable bonds that had chosen_i as an endpoint are now invalid.
+                for(int k : params.neighbors[chosen_i])
+                    formable_remove(chosen_i, k);
             }
+            if(intact_bonds[chosen_j].empty()) {
+                is_remaining[chosen_j] = false;
+                remaining_triangles--;
+                j_detached = true;
+                for(int k : params.neighbors[chosen_j])
+                    formable_remove(chosen_j, k);
+            }
+            // The broken bond itself becomes re-formable only if both ends are still attached.
+            if(!i_detached && !j_detached)
+                formable_insert(chosen_i, chosen_j);
+
+        } 
+        else {
+            // --- Formation event ---
+            int bond_idx = std::min((int)(uniform(gen) * n_formable), n_formable - 1);
+            auto [ci, cj] = formable_vec[bond_idx];
+            chosen_i = ci; chosen_j = cj;
+            formable_remove(chosen_i, chosen_j);
+            intact_bonds[chosen_i].insert(chosen_j);
+            intact_bonds[chosen_j].insert(chosen_i);
+            remaining_bonds++;
         }
 
         // Record the event.
@@ -155,6 +213,7 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
         result.b.push_back(remaining_bonds);
         result.event_bond_i.push_back(chosen_i);
         result.event_bond_j.push_back(chosen_j);
+        result.event_is_formation.push_back(is_formation);
     }
 
     // Shift times so that t=0 coincides with the first triangle detachment.
@@ -177,15 +236,16 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
 void print_results(const SimulationResult& result) {
     fmt::print("Waiting time: {:.6f}\n", result.waiting_time);
     fmt::print("\nSimulation timeline:\n");
-    fmt::print("{:>12} {:>8} {:>8} {:>8} {:>8}\n", "Time", "N", "B", "BondI", "BondJ");
+    fmt::print("{:>12} {:>8} {:>8} {:>8} {:>8} {:>8}\n", "Time", "N", "B", "BondI", "BondJ", "Event");
 
     for(size_t i = 0; i < result.time.size(); i++) {
-        fmt::print("{:>12.6f} {:>8d} {:>8d} {:>8d} {:>8d}\n",
+        fmt::print("{:>12.6f} {:>8d} {:>8d} {:>8d} {:>8d} {:>8}\n",
                     result.time[i],
                     result.n[i],
                     result.b[i],
                     result.event_bond_i[i],
-                    result.event_bond_j[i]);
+                    result.event_bond_j[i],
+                    result.event_is_formation[i] ? "form" : "break");
     }
 }
 
@@ -284,6 +344,7 @@ int main(int argc, char* argv[]) {
         ("temperature,T", "Temperature", cxxopts::value<double>())
         ("eps", "Epsilon parameter", cxxopts::value<double>())
         ("nu", "Attempt frequency", cxxopts::value<double>()->default_value("1.0"))
+        ("k_on", "Bond re-formation rate constant (same units as nu; T-independent; 0 = irreversible)", cxxopts::value<double>()->default_value("0.0"))
         ("trajectories", "Number of trajectories to average", cxxopts::value<unsigned int>()->default_value("1"))
         ("seed", "Random seed for reproducibility", cxxopts::value<unsigned int>()->default_value("42"))
         ("capsid", "Capsid type: 'aav' or 'icosahedron'", cxxopts::value<std::string>()->default_value("icosahedron"))
@@ -292,6 +353,7 @@ int main(int argc, char* argv[]) {
     
     double beta_eps;
     double nu;
+    double k_on;
     unsigned int n_trajectories;
     unsigned int seed;
     std::string capsid_type;
@@ -319,6 +381,7 @@ int main(int argc, char* argv[]) {
         }
         
         nu = result["nu"].as<double>();
+        k_on = result["k_on"].as<double>();
         n_trajectories = result["trajectories"].as<unsigned int>();
         seed = result["seed"].as<unsigned int>();
         capsid_type = result["capsid"].as<std::string>();
@@ -343,11 +406,11 @@ int main(int argc, char* argv[]) {
     }
 
     fmt::print("Running Gillespie disassembly simulation...\n");
-    fmt::print("Parameters: beta_eps={}, nu={}, trajectories={}, seed={}, capsid={}\n", beta_eps, nu, n_trajectories, seed, capsid_type);
+    fmt::print("Parameters: beta_eps={}, nu={}, k_on={}, trajectories={}, seed={}, capsid={}\n", beta_eps, nu, k_on, n_trajectories, seed, capsid_type);
     fmt::print("\n");
 
     std::vector<SimulationResult> trajectories;
-    CapsidParameters params(neighbors, beta_eps, nu);
+    CapsidParameters params(neighbors, beta_eps, nu, k_on);
     
     // Run multiple trajectories
     for(unsigned int i = 0; i < n_trajectories; i++) {

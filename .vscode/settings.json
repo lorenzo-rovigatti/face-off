@@ -1,5 +1,7 @@
 {
     "chat.tools.terminal.autoApprove": {
-        "./face-off": true
+        "./face-off": true,
+        "./empty_capsids_bonds": true,
+        "make": true
     }
 }

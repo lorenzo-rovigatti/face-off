@@ -139,10 +139,7 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double nu
         }
 
         // Calculate total rate
-        double K = 0.0;
-        for(double rate : rates) {
-            K += rate;
-        }
+        double K = std::accumulate(rates.begin(), rates.end(), 0.0);
 
         // Sample time to next event
         double u = uniform(gen);
@@ -190,13 +187,13 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, double nu
 void print_results(const SimulationResult& result) {
     fmt::print("Waiting time: {:.6f}\n", result.waiting_time);
     fmt::print("\nSimulation timeline:\n");
-    fmt::print("{:>12} {:>8} {:>8} {:>12} {:>12}\n", "Time", "N", "B", "Removed", "BrokenBonds");
+    fmt::print("{:>12} {:>8} {:>8} {:>12} {:>12}\n", "Time", "B", "N", "Removed", "BrokenBonds");
     
     for(size_t i = 0; i < result.time.size(); i++) {
         fmt::print("{:>12.6f} {:>8d} {:>8d} {:>12d} {:>12d}\n",
                     result.time[i],
-                    result.n[i],
                     result.b[i],
+                    result.n[i],
                     result.removed_triangle[i],
                     result.broken_bonds[i]);
     }
@@ -277,11 +274,11 @@ void print_averaged_results(const std::string& filename, const AveragedResult& a
     std::ofstream ofs(filename);
     
     ofs << fmt::format("# Waiting time: {:.6f} ± {:.6f}", averaged.waiting_time_mean, averaged.waiting_time_std) << std::endl;
-    ofs << fmt::format("# {:>12} {:>16} {:>16} {:>16} {:>16}", "Time", "N_mean", "N_std", "B_mean", "B_std") << std::endl;
+    ofs << fmt::format("# {:>12} {:>16} {:>16} {:>16} {:>16}", "Time", "B_mean", "B_std", "N_mean", "N_std") << std::endl;
     
     for(size_t i = 0; i < averaged.time.size(); i++) {
         ofs << fmt::format("{:>12.6f} {:>16.2f} {:>16.2f} {:>16.2f} {:>16.2f}", 
-                averaged.time[i], averaged.n_mean[i], averaged.n_std[i], averaged.b_mean[i], averaged.b_std[i])
+                averaged.time[i], averaged.b_mean[i], averaged.b_std[i], averaged.n_mean[i], averaged.n_std[i])
             << std::endl;
     }
 
