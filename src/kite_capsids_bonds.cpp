@@ -21,8 +21,13 @@ struct CapsidParameters {
     uint32_t N;
     std::vector<std::vector<int>> neighbors;
     NeighborSideMap neighbor_sides;
-    std::map<std::pair<int, int>, double> k_off_by_bond;
+    std::vector<double> k_off_by_bond;
     double k_on;   // Per-bond re-forming rate (T-independent, same units as nu; 0 = irreversible)
+
+    size_t bond_index(int i, int j) const {
+        if(i > j) std::swap(i, j);
+        return (size_t)i * N - (size_t)i * (i + 1) / 2 + (size_t)(j - i - 1);
+    }
 
     CapsidParameters(const std::vector<std::vector<int>>& mneighbors,
                      const NeighborSideMap& mneighbor_sides,
@@ -37,6 +42,8 @@ struct CapsidParameters {
         if(neighbor_sides.size() != neighbors.size()) {
             throw std::invalid_argument("Neighbor-side map size does not match topology size");
         }
+
+        k_off_by_bond.resize((size_t)N * (N - 1) / 2, 0.0);
 
         for(uint32_t i = 0; i < N; i++) {
             if(neighbor_sides[i].size() != neighbors[i].size()) {
@@ -60,14 +67,13 @@ struct CapsidParameters {
                 }
 
                 double beta_eps = pair_it->second;
-                k_off_by_bond[{(int)i, j}] = nu * std::exp(-beta_eps);
+                k_off_by_bond[bond_index((int)i, j)] = nu * std::exp(-beta_eps);
             }
         }
     }
 
     double bond_break_rate(int i, int j) const {
-        if(i > j) std::swap(i, j);
-        return k_off_by_bond.at({i, j});
+        return k_off_by_bond.at(bond_index(i, j));
     }
 };
 
@@ -274,8 +280,8 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
                 }
             }
         }
-        double K_form  = n_formable       * params.k_on;
-        double K       = K_break + K_form;
+        double K_form = n_formable * params.k_on;
+        double K = K_break + K_form;
 
         // Sample waiting time.
         double dt = -std::log(uniform(gen)) / K;
@@ -295,7 +301,11 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
                 for(int j : intact_bonds[i]) {
                     if(j > (int)i) {
                         cumulative += params.bond_break_rate((int)i, j);
-                        if(cumulative >= threshold) { chosen_i = (int)i; chosen_j = j; break; }
+                        if(cumulative >= threshold) { 
+                            chosen_i = (int)i; 
+                            chosen_j = j;
+                            break;
+                        }
                     }
                 }
             }
