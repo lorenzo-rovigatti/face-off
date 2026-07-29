@@ -5,6 +5,7 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <unordered_map>
 #include <cmath>
 #include <random>
 #include <algorithm>
@@ -201,15 +202,18 @@ struct AveragedResult {
     std::vector<double> b_std;
 };
 
-// Count intact bonds from the bond-state sets (use i < j to avoid double-counting)
-int count_intact_bonds(const std::vector<std::set<int>>& intact_bonds) {
+struct BondBucket {
+    std::vector<int> bonds;
+    std::unordered_map<int, size_t> pos;
+};
+
+// Count intact bonds from the packed bond-state vectors (use i < j to avoid double-counting)
+int count_intact_bonds(const std::vector<BondBucket>& intact_bonds) {
     int b = 0;
     for(size_t i = 0; i < intact_bonds.size(); i++) {
-        for(int j : intact_bonds[i]) {
-            if(j > (int)i) b++;
-        }
+        b += (int)intact_bonds[i].bonds.size();
     }
-    return b;
+    return b / 2;
 }
 
 // Main Gillespie disassembly simulation: events are single bond breaks or re-formations.
@@ -220,12 +224,36 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
     std::mt19937 gen(seed != 0 ? seed : std::random_device{}());
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
 
-    std::vector<std::set<int>> intact_bonds(params.N);
+    std::vector<BondBucket> intact_bonds(params.N);
     std::vector<bool> is_remaining(params.N, true);
 
+    const auto intact_insert = [&](int i, int j) {
+        auto& bucket = intact_bonds[i];
+        bucket.pos[j] = bucket.bonds.size();
+        bucket.bonds.push_back(j);
+    };
+
+    const auto intact_remove = [&](int i, int j) {
+        auto& bucket = intact_bonds[i];
+        auto it = bucket.pos.find(j);
+        if(it == bucket.pos.end()) return;
+
+        size_t idx = it->second;
+        size_t last = bucket.bonds.size() - 1;
+        if(idx != last) {
+            int moved = bucket.bonds[last];
+            bucket.bonds[idx] = moved;
+            bucket.pos[moved] = idx;
+        }
+        bucket.bonds.pop_back();
+        bucket.pos.erase(it);
+    };
+
     for(uint32_t i = 0; i < params.N; i++) {
+        intact_bonds[i].bonds.reserve(params.neighbors[i].size());
+        intact_bonds[i].pos.reserve(params.neighbors[i].size());
         for(int j : params.neighbors[i]) {
-            intact_bonds[i].insert(j);
+            intact_insert((int)i, j);
         }
     }
 
@@ -274,7 +302,7 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
         double K_break = 0.0;
         for(uint32_t i = 0; i < params.N; i++) {
             if(!is_remaining[i]) continue;
-            for(int j : intact_bonds[i]) {
+            for(int j : intact_bonds[i].bonds) {
                 if(j > (int)i) {
                     K_break += params.bond_break_rate((int)i, j);
                 }
@@ -298,7 +326,7 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
             double cumulative = 0.0;
             for(uint32_t i = 0; i < params.N && chosen_i < 0; i++) {
                 if(!is_remaining[i]) continue;
-                for(int j : intact_bonds[i]) {
+                for(int j : intact_bonds[i].bonds) {
                     if(j > (int)i) {
                         cumulative += params.bond_break_rate((int)i, j);
                         if(cumulative >= threshold) { 
@@ -314,13 +342,13 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
                 throw std::runtime_error("Failed to select a bond-breaking event");
             }
 
-            intact_bonds[chosen_i].erase(chosen_j);
-            intact_bonds[chosen_j].erase(chosen_i);
+            intact_remove(chosen_i, chosen_j);
+            intact_remove(chosen_j, chosen_i);
             remaining_bonds--;
 
             // Check each endpoint for detachment and update the formable set accordingly.
             bool i_detached = false, j_detached = false;
-            if(intact_bonds[chosen_i].empty()) {
+            if(intact_bonds[chosen_i].bonds.empty()) {
                 is_remaining[chosen_i] = false;
                 remaining_triangles--;
                 i_detached = true;
@@ -328,7 +356,7 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
                 for(int k : params.neighbors[chosen_i])
                     formable_remove(chosen_i, k);
             }
-            if(intact_bonds[chosen_j].empty()) {
+            if(intact_bonds[chosen_j].bonds.empty()) {
                 is_remaining[chosen_j] = false;
                 remaining_triangles--;
                 j_detached = true;
@@ -346,8 +374,8 @@ SimulationResult gillespie_disassembly(const CapsidParameters& params, unsigned 
             auto [ci, cj] = formable_vec[bond_idx];
             chosen_i = ci; chosen_j = cj;
             formable_remove(chosen_i, chosen_j);
-            intact_bonds[chosen_i].insert(chosen_j);
-            intact_bonds[chosen_j].insert(chosen_i);
+            intact_insert(chosen_i, chosen_j);
+            intact_insert(chosen_j, chosen_i);
             remaining_bonds++;
         }
 
