@@ -105,8 +105,8 @@ std::map<std::pair<int, int>, double> parse_pair_values(const std::string& text,
         int side_i = std::stoi(trim_copy(pair_text.substr(0, dash_pos)));
         int side_j = std::stoi(trim_copy(pair_text.substr(dash_pos + 1)));
 
-        if(side_i < 0 || side_i > 2 || side_j < 0 || side_j > 2) {
-            throw std::runtime_error("Option --" + option_name + " side indices must be in [0,2]");
+        if(side_i < 0 || side_i > 3 || side_j < 0 || side_j > 3) {
+            throw std::runtime_error("Option --" + option_name + " side indices must be in [0,3]");
         }
 
         int side_a = std::min(side_i, side_j);
@@ -562,8 +562,10 @@ int main(int argc, char* argv[]) {
                 }
             }
             if(!missing.empty()) {
-                fmt::print("Error: Missing bond-type values for: {}\n", join_missing_bond_types(missing));
-                return 1;
+                fmt::print("Missing bond-type values for: {}, they will all be set to 0\n", join_missing_bond_types(missing));
+                for(const auto& pair_key : missing) {
+                    beta_eps_by_pair[pair_key] = 0.0;
+                }
             }
         }
     }
